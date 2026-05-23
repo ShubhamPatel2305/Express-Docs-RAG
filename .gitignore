@@ -34,9 +34,6 @@ backend/data/docs_meta.json
 # Eval artefacts
 backend/eval/reports/
 
-# Cloned corpus
-external/
-
 # OS / editor
 .DS_Store
 Thumbs.db
