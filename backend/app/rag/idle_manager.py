@@ -13,7 +13,7 @@ _monitor_task: asyncio.Task | None = None
 
 def _get_timeout() -> int:
     """Read at call-time so .env changes take effect after restart."""
-    return int(os.environ.get("IDLE_TIMEOUT_SECONDS", "300"))
+    return int(os.environ.get("IDLE_TIMEOUT_SECONDS", "60"))
 
 
 def record_request():
