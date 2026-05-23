@@ -49,11 +49,15 @@ jobs:
       - name: Run eval
         working-directory: backend
         env:
-          LLM_PROVIDER: ${{ secrets.LLM_PROVIDER || 'gemini' }}
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          LLM_PROVIDER: openai
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          OPENAI_MODEL: gpt-4o-mini
+          GEMINI_API_KEY: ""
           COHERE_API_KEY: ${{ secrets.COHERE_API_KEY }}
-          RERANKER_ENABLED: ${{ secrets.COHERE_API_KEY != '' }}
+          RERANKER_ENABLED: ${{ secrets.COHERE_API_KEY != '' && 'true' || 'false' }}
+          EMBEDDING_BACKEND: local
+          ANONYMIZED_TELEMETRY: "False"
+          CHROMA_TELEMETRY: "false"
         run: python -m eval.run_eval --check-thresholds --output eval/reports/ci.json
 
       - name: Upload report
