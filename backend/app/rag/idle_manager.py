@@ -4,26 +4,34 @@ import os
 import time
 import gc
 
-# Attach to uvicorn's logger so output appears in PM2 logs automatically
 logger = logging.getLogger("uvicorn.error")
 
 last_request_time: float = time.time()
 _monitor_task: asyncio.Task | None = None
 
-
-def _get_timeout() -> int:
-    """Read at call-time so .env changes take effect after restart."""
-    return int(os.environ.get("IDLE_TIMEOUT_SECONDS", "60"))
+# File the external cron script reads
+TIMESTAMP_FILE = "/tmp/expressrag_last_request"
 
 
 def record_request():
     """Call this on every incoming chat request."""
     global last_request_time
     last_request_time = time.time()
+    # Write to file so external cron script can read it
+    try:
+        with open(TIMESTAMP_FILE, "w") as f:
+            f.write(str(last_request_time))
+    except Exception:
+        pass
+
+
+def _get_timeout() -> int:
+    return int(os.environ.get("IDLE_TIMEOUT_SECONDS", "300"))
 
 
 def _offload_models():
-    """Clear all lru_cache singletons to release RAM."""
+    """Clear lru_cache singletons — frees Python objects but not OS pages.
+    Real RAM return happens via pm2 restart triggered by cron script."""
     try:
         from app.rag.embeddings import get_embedder
         from app.rag.retriever import get_retriever
@@ -32,24 +40,21 @@ def _offload_models():
         get_embedder.cache_clear()
         get_retriever.cache_clear()
         get_reranker.cache_clear()
-
         gc.collect()
-
-        logger.info("[idle_manager] Models offloaded — RAM released.")
+        logger.info("[idle_manager] Python caches cleared.")
     except Exception as e:
-        logger.error(f"[idle_manager] Offload failed: {e}")
+        logger.error(f"[idle_manager] Cache clear failed: {e}")
 
 
 async def _idle_monitor():
-    """Background task — checks every 30s for inactivity."""
     offloaded = False
     timeout = _get_timeout()
     logger.info(f"[idle_manager] Monitor running — timeout={timeout}s, check interval=30s.")
 
     while True:
-        await asyncio.sleep(30)                         # check every 30s (not 60)
+        await asyncio.sleep(30)
         idle_seconds = time.time() - last_request_time
-        timeout = _get_timeout()                        # re-read each cycle so env changes apply
+        timeout = _get_timeout()
 
         logger.info(
             f"[idle_manager] Idle check: {idle_seconds:.0f}s idle "
@@ -57,7 +62,7 @@ async def _idle_monitor():
         )
 
         if idle_seconds >= timeout and not offloaded:
-            logger.info(f"[idle_manager] Threshold reached — offloading models.")
+            logger.info("[idle_manager] Threshold reached — clearing Python caches.")
             _offload_models()
             offloaded = True
 
@@ -68,10 +73,11 @@ async def _idle_monitor():
 
 def start_idle_monitor():
     global _monitor_task
-    # get_running_loop() is correct here — we're called from inside async lifespan
+    # Write initial timestamp so file always exists for cron script
+    record_request()
     loop = asyncio.get_running_loop()
     _monitor_task = loop.create_task(_idle_monitor())
-    logger.info(f"[idle_manager] Started — offload after {_get_timeout()}s inactivity.")
+    logger.info(f"[idle_manager] Started — pm2 restart after {_get_timeout()}s inactivity.")
 
 
 def stop_idle_monitor():
