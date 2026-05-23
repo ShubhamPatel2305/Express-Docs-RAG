@@ -12,6 +12,9 @@ jobs:
     name: Ragas eval suite
     runs-on: ubuntu-latest
     timeout-minutes: 25
+    permissions:
+      pull-requests: write   # ← add this
+      contents: read
 
     steps:
       - uses: actions/checkout@v4
