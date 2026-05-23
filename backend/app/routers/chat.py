@@ -3,6 +3,7 @@ from fastapi import APIRouter, HTTPException
 
 from app.models.schemas import ChatRequest, ChatResponse
 from app.rag.pipeline import run_pipeline
+from app.rag.idle_manager import record_request
 
 
 router = APIRouter(tags=["chat"])
@@ -10,6 +11,7 @@ router = APIRouter(tags=["chat"])
 
 @router.post("/chat", response_model=ChatResponse)
 def chat(req: ChatRequest) -> ChatResponse:
+    record_request()  # reset idle timer on every request
     try:
         result = run_pipeline(
             query=req.query,
@@ -18,7 +20,6 @@ def chat(req: ChatRequest) -> ChatResponse:
             use_reranker=req.use_reranker,
         )
     except FileNotFoundError as e:
-        # Most common cause: someone tried to chat before running ingestion.
         raise HTTPException(status_code=503, detail=f"Index not ready: {e}") from e
     except RuntimeError as e:
         raise HTTPException(status_code=500, detail=str(e)) from e
