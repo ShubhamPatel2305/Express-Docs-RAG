@@ -1,13 +1,19 @@
 import asyncio
 import logging
+import os
 import time
+import gc
 
-logger = logging.getLogger(__name__)
+# Attach to uvicorn's logger so output appears in PM2 logs automatically
+logger = logging.getLogger("uvicorn.error")
 
-# Updated by the chat router on every request
 last_request_time: float = time.time()
-IDLE_TIMEOUT_SECONDS = 300  # 5 minutes
 _monitor_task: asyncio.Task | None = None
+
+
+def _get_timeout() -> int:
+    """Read at call-time so .env changes take effect after restart."""
+    return int(os.environ.get("IDLE_TIMEOUT_SECONDS", "300"))
 
 
 def record_request():
@@ -27,43 +33,50 @@ def _offload_models():
         get_retriever.cache_clear()
         get_reranker.cache_clear()
 
-        # Also explicitly delete the heavy objects so GC can collect immediately
-        import gc
         gc.collect()
 
-        logger.info("Idle timeout reached — models offloaded from memory.")
+        logger.info("[idle_manager] Models offloaded — RAM released.")
     except Exception as e:
-        logger.error(f"Error during model offload: {e}")
+        logger.error(f"[idle_manager] Offload failed: {e}")
 
 
 async def _idle_monitor():
-    """Background task — checks every 60s for inactivity."""
+    """Background task — checks every 30s for inactivity."""
     offloaded = False
+    timeout = _get_timeout()
+    logger.info(f"[idle_manager] Monitor running — timeout={timeout}s, check interval=30s.")
 
     while True:
-        await asyncio.sleep(60)
+        await asyncio.sleep(30)                         # check every 30s (not 60)
         idle_seconds = time.time() - last_request_time
+        timeout = _get_timeout()                        # re-read each cycle so env changes apply
 
-        if idle_seconds >= IDLE_TIMEOUT_SECONDS and not offloaded:
-            logger.info(f"No requests for {idle_seconds:.0f}s — offloading models.")
+        logger.info(
+            f"[idle_manager] Idle check: {idle_seconds:.0f}s idle "
+            f"(threshold={timeout}s, offloaded={offloaded})"
+        )
+
+        if idle_seconds >= timeout and not offloaded:
+            logger.info(f"[idle_manager] Threshold reached — offloading models.")
             _offload_models()
             offloaded = True
 
-        elif idle_seconds < IDLE_TIMEOUT_SECONDS and offloaded:
-            # Reset flag when traffic resumes (models reload lazily on next request)
+        elif idle_seconds < timeout and offloaded:
             offloaded = False
-            logger.info("Traffic resumed — models will reload on next request.")
+            logger.info("[idle_manager] Traffic resumed — models reload on next request.")
 
 
 def start_idle_monitor():
     global _monitor_task
-    loop = asyncio.get_event_loop()
+    # get_running_loop() is correct here — we're called from inside async lifespan
+    loop = asyncio.get_running_loop()
     _monitor_task = loop.create_task(_idle_monitor())
-    logger.info(f"Idle monitor started — offload after {IDLE_TIMEOUT_SECONDS}s inactivity.")
+    logger.info(f"[idle_manager] Started — offload after {_get_timeout()}s inactivity.")
 
 
 def stop_idle_monitor():
     global _monitor_task
     if _monitor_task:
         _monitor_task.cancel()
+        logger.info("[idle_manager] Monitor stopped.")
         _monitor_task = None
