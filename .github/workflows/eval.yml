@@ -33,7 +33,12 @@ jobs:
       # This keeps the eval against current docs and avoids committing them.
       - name: Clone Express docs
         run: |
-          git clone --depth 1 https://github.com/expressjs/expressjs.com.git external/expressjs.com
+          if [ -d "external/expressjs.com/en" ]; then
+            echo "Express docs already present in repo — skipping clone."
+          else
+            echo "Cloning fresh..."
+            git clone --depth 1 https://github.com/expressjs/expressjs.com.git external/expressjs.com
+          fi
 
       - name: Build index
         working-directory: backend
