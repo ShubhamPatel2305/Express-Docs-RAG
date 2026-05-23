@@ -26,7 +26,7 @@ const TECH_TAGS = [
   "Cross-Encoder",
 ];
 
-const GITHUB_URL = "https://github.com/shubhampatel/express-rag-chat"; // ← replace with your actual repo URL
+const GITHUB_URL = "https://github.com/ShubhamPatel2305/Express-Docs-RAG"; // ← replace with your actual repo URL
 const PORTFOLIO_URL = "https://shubhampatel.uk";
 
 export default function Page() {
