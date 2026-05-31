@@ -2,16 +2,30 @@
 
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import type { Source } from "@/lib/api";
+import type { HealingEvent, Source } from "@/lib/api";
+import { HealingTrace } from "./HealingTrace";
 
 interface Props {
   role: "user" | "assistant";
   content: string;
   sources?: Source[];
   latency_ms?: number;
+  trace?: HealingEvent[];
+  fromCache?: boolean;
+  fallback?: boolean;
+  attempts?: number;
 }
 
-export function MessageBubble({ role, content, sources, latency_ms }: Props) {
+export function MessageBubble({
+  role,
+  content,
+  sources,
+  latency_ms,
+  trace,
+  fromCache,
+  fallback,
+  attempts,
+}: Props) {
   const isUser = role === "user";
 
   return (
@@ -30,6 +44,13 @@ export function MessageBubble({ role, content, sources, latency_ms }: Props) {
         )}
       </header>
 
+      {/* Soft fallback warning when the loop couldn't ground the answer */}
+      {!isUser && fallback && (
+        <div className="mb-3 text-[11px] font-mono uppercase tracking-[0.15em] text-amber-800 bg-amber-50/60 border border-amber-700/30 px-3 py-1.5 rounded-sm">
+          ⚠ low confidence — verifier flagged unsupported claims
+        </div>
+      )}
+
       <div
         className={
           "prose-answer text-[15px] " +
@@ -42,6 +63,15 @@ export function MessageBubble({ role, content, sources, latency_ms }: Props) {
           <ReactMarkdown remarkPlugins={[remarkGfm]}>{content}</ReactMarkdown>
         )}
       </div>
+
+      {!isUser && trace && trace.length > 0 && (
+        <HealingTrace
+          trace={trace}
+          fromCache={!!fromCache}
+          fallback={!!fallback}
+          attempts={attempts ?? 1}
+        />
+      )}
 
       {sources && sources.length > 0 && (
         <details className="mt-4 group">

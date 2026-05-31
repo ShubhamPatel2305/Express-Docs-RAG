@@ -2,13 +2,23 @@
 
 import { useEffect, useRef, useState } from "react";
 import { Globe, ExternalLink } from "lucide-react";
-import { chat, type ChatMessage, type Source } from "@/lib/api";
+import {
+  chat,
+  chatStream,
+  type ChatMessage,
+  type HealingEvent,
+  type Source,
+} from "@/lib/api";
 import { MessageBubble } from "@/components/MessageBubble";
 import { StatusPill } from "@/components/StatusPill";
 
 interface Turn extends ChatMessage {
   sources?: Source[];
   latency_ms?: number;
+  trace?: HealingEvent[];
+  fromCache?: boolean;
+  fallback?: boolean;
+  attempts?: number;
 }
 
 const STARTER_QUESTIONS = [
@@ -20,11 +30,33 @@ const STARTER_QUESTIONS = [
 
 const TECH_TAGS = [
   "Next.js",
+  "FastAPI",
   "TypeScript",
-  "RAG",
+  "Self-Healing RAG",
   "BM25 + Dense",
   "Cross-Encoder",
+  "Semantic Cache",
+  "HyDE",
+  "CRAG",
+  "SSE Streaming",
+  "Adaptive Routing",
 ];
+
+// Human-readable label for each healing stage shown while a request is in-flight.
+const STAGE_LABEL: Record<string, string> = {
+  routing:      "Routing your question",
+  cache_hit:    "Cache hit — serving instantly",
+  hyde:         "Generating hypothetical passage",
+  retrieval:    "Searching documentation",
+  grading:      "Grading retrieved chunks",
+  rerank:       "Reranking results",
+  rewrite:      "Rewriting query for better retrieval",
+  generation:   "Generating answer",
+  faithfulness: "Verifying answer accuracy",
+  retry:        "Retrying with improved query",
+  give_up:      "Returning best-effort answer",
+  done:         "Finalising",
+};
 
 const GITHUB_URL = "https://github.com/ShubhamPatel2305/Express-Docs-RAG"; // ← replace with your actual repo URL
 const PORTFOLIO_URL = "https://shubhampatel.uk";
@@ -35,11 +67,17 @@ export default function Page() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [useReranker, setUseReranker] = useState(true);
+  const [useHyde, setUseHyde] = useState(false);
+  const [streaming, setStreaming] = useState(true);
+  // Live trace while a streaming request is in flight - cleared on next send.
+  const [liveTrace, setLiveTrace] = useState<HealingEvent[]>([]);
+  // Flips true after the very first response — used to show the VPS warm-up notice.
+  const [everResponded, setEverResponded] = useState(false);
   const endRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     endRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
-  }, [turns.length, busy]);
+  }, [turns.length, busy, liveTrace.length]);
 
   function GithubIcon({ size = 13 }: { size?: number }) {
     return (
@@ -59,29 +97,99 @@ export default function Page() {
     const q = query.trim();
     if (!q || busy) return;
     setError(null);
+    setLiveTrace([]);
     const newTurns: Turn[] = [...turns, { role: "user", content: q }];
     setTurns(newTurns);
     setInput("");
     setBusy(true);
+
     try {
       const history: ChatMessage[] = newTurns.map(({ role, content }) => ({
         role,
         content,
       }));
-      const resp = await chat(q, history.slice(0, -1), { useReranker });
-      setTurns((prev) => [
-        ...prev,
-        {
-          role: "assistant",
-          content: resp.answer,
-          sources: resp.sources,
-          latency_ms: resp.latency_ms,
-        },
-      ]);
+      const priorHistory = history.slice(0, -1);
+
+      if (streaming) {
+        // Streaming path. We accumulate tokens into a "live" assistant turn
+        // and surface events into the liveTrace state so the user sees the
+        // self-healing loop run in real time.
+        const assistantIndex = newTurns.length; // where the assistant turn will land
+        // Pre-create an empty assistant slot so token chunks land in the right place.
+        setTurns((prev) => [...prev, { role: "assistant", content: "", trace: [] }]);
+
+        const live: HealingEvent[] = [];
+        const final = await chatStream(
+          q,
+          priorHistory,
+          { useReranker, useHyde },
+          {
+            onEvent: (ev) => {
+              live.push(ev);
+              setLiveTrace([...live]);
+              // Also patch the in-flight turn so the trace shows under the bubble.
+              setTurns((prev) => {
+                const next = [...prev];
+                if (next[assistantIndex]?.role === "assistant") {
+                  next[assistantIndex] = { ...next[assistantIndex], trace: [...live] };
+                }
+                return next;
+              });
+            },
+            onToken: (text) => {
+              setTurns((prev) => {
+                const next = [...prev];
+                if (next[assistantIndex]?.role === "assistant") {
+                  next[assistantIndex] = {
+                    ...next[assistantIndex],
+                    content: (next[assistantIndex].content ?? "") + text,
+                  };
+                }
+                return next;
+              });
+            },
+            onError: (msg) => setError(msg),
+          }
+        );
+
+        // Replace the in-flight bubble with the final payload (authoritative).
+        setTurns((prev) => {
+          const next = [...prev];
+          next[assistantIndex] = {
+            role: "assistant",
+            content: final.answer,
+            sources: final.sources,
+            latency_ms: final.latency_ms,
+            trace: final.trace,
+            fromCache: final.from_cache,
+            fallback: final.fallback,
+            attempts: final.attempts,
+          };
+          return next;
+        });
+      } else {
+        // Non-streaming path. Single request, full response.
+        const resp = await chat(q, priorHistory, { useReranker, useHyde });
+        setTurns((prev) => [
+          ...prev,
+          {
+            role: "assistant",
+            content: resp.answer,
+            sources: resp.sources,
+            latency_ms: resp.latency_ms,
+            trace: resp.trace,
+            fromCache: resp.from_cache,
+            fallback: resp.fallback,
+            attempts: resp.attempts,
+          },
+        ]);
+      }
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
       setBusy(false);
+      setLiveTrace([]);
+      setEverResponded(true);
     }
   }
 
@@ -96,7 +204,7 @@ export default function Page() {
       <header className="mb-12 relative">
         {/* Top bar: issue label + branding links + status */}
         <div className="flex items-center justify-between text-[10px] font-mono uppercase tracking-[0.22em] text-muted">
-          <span>Volume I · Issue 01</span>
+          <span>Volume I · Issue 02</span>
 
           <div className="flex items-center gap-5">
             <a
@@ -132,7 +240,7 @@ export default function Page() {
         </h1>
 
         <p className="mt-5 max-w-xl text-[15px] leading-relaxed text-ink/80">
-          A retrieval-augmented chat over the official{" "}
+          A self-healing RAG chat over the official{" "}
           <a
             href="https://github.com/expressjs/expressjs.com"
             target="_blank"
@@ -141,8 +249,9 @@ export default function Page() {
           >
             Express.js documentation
           </a>
-          . Hybrid search (dense + BM25), cross-encoder reranking, grounded
-          answers with citations.
+          . Hybrid retrieval, cross-encoder reranking, LLM-graded chunks,
+          query rewriting on failed retrievals, faithfulness checks, and a
+          transparent healing trace.
         </p>
 
         {/* Tech stack pills */}
@@ -212,11 +321,41 @@ export default function Page() {
             content={t.content}
             sources={t.sources}
             latency_ms={t.latency_ms}
+            trace={t.trace}
+            fromCache={t.fromCache}
+            fallback={t.fallback}
+            attempts={t.attempts}
           />
         ))}
-        {busy && (
-          <div className="font-mono text-[11px] uppercase tracking-[0.18em] text-muted">
-            retrieving<span className="animate-blink">_</span>
+        {/* VPS cold-start notice — only shown while the very first request is in-flight */}
+        {busy && !everResponded && (
+          <div className="border border-rule bg-paper/80 px-4 py-3 rounded-sm text-[12px] font-mono text-muted leading-relaxed">
+            <span className="text-ink font-semibold">First request on a VPS</span>
+            {" "}— the model and indices are loading into memory. This usually takes{" "}
+            <span className="text-ink">30–60 seconds</span>. Subsequent questions will be
+            much faster. Please hang tight.
+          </div>
+        )}
+
+        {/* Live stage indicator while non-streaming request is in-flight */}
+        {busy && !streaming && (
+          <div className="flex items-center gap-2 font-mono text-[11px] uppercase tracking-[0.18em] text-muted">
+            <span className="inline-block w-1.5 h-1.5 rounded-full bg-muted animate-pulse" />
+            Working — retrieving and generating
+            <span className="animate-blink">_</span>
+          </div>
+        )}
+
+        {/* Live stage indicator while streaming — shows the current pipeline step */}
+        {busy && streaming && (
+          <div className="flex items-center gap-2 font-mono text-[11px] uppercase tracking-[0.18em]">
+            <span className="inline-block w-1.5 h-1.5 rounded-full bg-accent animate-pulse" />
+            <span className="text-accent">
+              {liveTrace.length > 0
+                ? (STAGE_LABEL[liveTrace[liveTrace.length - 1].stage] ?? liveTrace[liveTrace.length - 1].stage)
+                : "Connecting to backend"}
+            </span>
+            <span className="animate-blink text-accent">_</span>
           </div>
         )}
         {error && (
@@ -257,16 +396,36 @@ export default function Page() {
         className="fixed inset-x-0 bottom-0 pointer-events-none"
       >
         <div className="pointer-events-auto mx-auto max-w-3xl px-5 sm:px-8 pb-6 pt-10 bg-gradient-to-t from-paper via-paper/95 to-transparent">
-          <div className="flex items-center justify-between mb-2">
-            <label className="flex items-center gap-2 text-[10px] font-mono uppercase tracking-[0.18em] text-muted cursor-pointer">
-              <input
-                type="checkbox"
-                checked={useReranker}
-                onChange={(e) => setUseReranker(e.target.checked)}
-                className="accent-accent"
-              />
-              reranker
-            </label>
+          <div className="flex items-center justify-between mb-2 flex-wrap gap-3">
+            <div className="flex items-center gap-4">
+              <label className="flex items-center gap-2 text-[10px] font-mono uppercase tracking-[0.18em] text-muted cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={useReranker}
+                  onChange={(e) => setUseReranker(e.target.checked)}
+                  className="accent-accent"
+                />
+                reranker
+              </label>
+              <label className="flex items-center gap-2 text-[10px] font-mono uppercase tracking-[0.18em] text-muted cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={useHyde}
+                  onChange={(e) => setUseHyde(e.target.checked)}
+                  className="accent-accent"
+                />
+                hyde
+              </label>
+              <label className="flex items-center gap-2 text-[10px] font-mono uppercase tracking-[0.18em] text-muted cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={streaming}
+                  onChange={(e) => setStreaming(e.target.checked)}
+                  className="accent-accent"
+                />
+                stream
+              </label>
+            </div>
             <span className="text-[10px] font-mono uppercase tracking-[0.18em] text-muted">
               press ↵ to send
             </span>
