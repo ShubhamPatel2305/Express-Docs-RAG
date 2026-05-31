@@ -67,6 +67,8 @@ def chat_stream(req: ChatRequest):
       event: final   -> the full ChatResponse payload at the end
       event: error   -> something blew up; payload has {message}
     """
+    record_request()  # reset idle timer — same as /chat, prevents VPS cron from killing us
+
     def gen():
         try:
             for event_type, payload in stream_self_healing(
