@@ -1,6 +1,6 @@
 # Express Docs RAG
 
-**Live demo:** [https://expressrag.shubhampatel.uk]  
+**Live demo:** [[https://express-docs.rag.shubhampatel.uk](https://express-docs.rag.shubhampatel.uk/)]  
 **Built by:** [Shubham Patel](https://shubhampatel.uk)
 
 A retrieval-augmented chatbot grounded in the official Express.js documentation.
